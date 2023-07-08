@@ -1,0 +1,241 @@
+var socket = io("ws://localhost:5000");
+const { RTCPeerConnection, RTCSessionDescription } = window;
+// let peerConnection = new RTCPeerConnection();
+let isAlreadyCalling = false;
+let isInitiatedTheCall = false;
+let audioTrack;
+let videoTrack;
+let audioStream;
+let sockets;
+
+start();
+
+socket.on("update-user-list", ({ users }) => {
+    updateUserList(users);
+});
+    
+socket.on("remove-user", ({ socketId }) => {
+    const elToRemove = document.getElementById(socketId);
+    
+    if (elToRemove) {
+        elToRemove.remove();
+    }
+});
+
+async function callUser(socketId, flag) {
+    const offer = await peerConnection.createOffer({mandatory: { OfferToReceiveAudio: true, OfferToReceiveVideo: true }});
+    await peerConnection.setLocalDescription(new RTCSessionDescription(offer));
+    console.log(offer);
+    socket.emit("call-user", {
+        flag,
+		offer,
+        to: socketId
+    });
+}
+
+function updateUserList(socketIds) {
+	sockets = socketIds;
+    const activeUserContainer = document.getElementById("active-user-container");
+    
+    socketIds.forEach(socketId => {
+        const alreadyExistingUser = document.getElementById(socketId);
+        if (!alreadyExistingUser) {
+            const userContainerEl = createUserItemContainer(socketId);
+            activeUserContainer.appendChild(userContainerEl);
+        }
+    });
+}
+
+function createUserItemContainer(socketId) {
+    const userContainerEl = document.createElement("div");
+    
+    const usernameEl = document.createElement("p");
+    
+    userContainerEl.setAttribute("class", "active-user");
+    userContainerEl.setAttribute("id", socketId);
+    usernameEl.setAttribute("class", "username");
+    usernameEl.innerHTML = `Socket: ${socketId}`;
+    
+    userContainerEl.appendChild(usernameEl);
+    
+    userContainerEl.addEventListener("click", () => {
+		// peerConnection.addTrack(audioTrack, audioStream);
+		isInitiatedTheCall = true;
+        unselectUsersFromList();
+        userContainerEl.setAttribute("class", "active-user active-user--selected");
+        const talkingWithInfo = document.getElementById("talking-with-info");
+        talkingWithInfo.innerHTML = `Talking with: "Socket: ${socketId}"`;
+        makeCall(socketId);
+    }); 
+    return userContainerEl;
+}
+
+function unselectUsersFromList() {
+    const alreadySelectedUser = document.querySelectorAll(".active-user.active-user--selected");
+  
+    alreadySelectedUser.forEach(el => {
+        el.setAttribute("class", "active-user");
+    });
+}
+/*
+const config = {
+  iceServers: [{'urls': 'stun:stun.l.google.com:19302'}]
+};
+// const signaler = new SignalingChannel();
+const pc = new RTCPeerConnection(config);
+const constraints = { audio: true, video: true };
+*/
+const selfVideo = document.querySelector("video#local-video");
+const remoteVideo = document.querySelector("video#remote-video");
+async function start() {
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: true });
+
+    audioTrack = stream.getTracks()[0];
+	videoTrack = stream.getTracks()[1];
+	audioStream = stream;
+    selfVideo.srcObject = stream;
+  } catch(err) {
+    console.error(err);
+  }
+}
+/*
+pc.ontrack = ({track, streams}) => {
+  track.onunmute = () => {
+    if (remoteVideo.srcObject) {
+      return;
+    }
+    remoteVideo.srcObject = streams[0];
+	console.log(streams);
+  };
+};
+
+let makingOffer = false;
+
+pc.onnegotiationneeded = async () => {
+  console.log('Negotiating');
+  try {
+    makingOffer = true;
+    await pc.setLocalDescription();
+    // signaler.send({ description: pc.localDescription });
+	socket.emit("call-user", { description: pc.localDescription, to: sockets[0] });
+  } catch(err) {
+    console.error(err);
+  } finally {
+    makingOffer = false;
+  }
+};
+
+// pc.onicecandidate = ({candidate}) => signaler.send({candidate});
+pc.onicecandidate = ({candidate}) => socket.emit("call-user", { candidate, to: sockets[0] });
+
+let ignoreOffer = false;
+
+// signaler.onmessage = async ({ data: { description, candidate } }) => {
+socket.on("call-made", async ({ description, candidate }) => {
+  console.log('Call Made');
+  try {
+    if (description) {
+	  console.log('Description');
+      const offerCollision = (description.type == "offer") && (makingOffer || pc.signalingState != "stable");
+
+      // ignoreOffer = !polite && offerCollision;
+	  ignoreOffer = offerCollision;
+      if (ignoreOffer) {
+        return;
+      }
+
+      await pc.setRemoteDescription(description);
+      if (description.type == "offer") {
+        await pc.setLocalDescription();
+        // signaler.send({ description: pc.localDescription })
+		socket.emit("call-user", { description: pc.localDescription, to: sockets[0] });
+      }
+    } else if (candidate) {
+	  console.log('Candidate');
+      try {
+        await pc.addIceCandidate(candidate);
+      } catch(err) {
+        if (!ignoreOffer) {
+          throw err;
+        }
+      }
+    }
+  } catch(err) {
+    console.error(err);
+  }
+});
+
+*/
+
+
+
+async function makeCall(socketId) {
+    const configuration = {'iceServers': [{'urls': 'stun:stun.l.google.com:19302'}]}
+    const peerConnection = new RTCPeerConnection(configuration);
+	peerConnection.addTrack(audioTrack, audioStream);
+	peerConnection.addTrack(videoTrack, audioStream);
+    socket.on('answerSent', async ({ answer }) => {
+		console.log(answer);
+        const remoteDesc = new RTCSessionDescription(answer);
+        await peerConnection.setRemoteDescription(remoteDesc);
+	});
+	
+	peerConnection.addEventListener('icecandidate', event => {
+		console.log('new candidate');
+		if (event.candidate) {
+			socket.emit('newIceCandidate', { 'new-ice-candidate': event.candidate, 'to': socketId });
+			console.log(event.candidate);
+		}
+	});
+	
+	socket.on('iceCandidate', async({ iceCandidate }) => {
+		try {
+			await peerConnection.addIceCandidate(iceCandidate);
+		} catch (e) {
+			console.error('Error adding received ice candidate', e);
+		}
+	});
+
+    const offer = await peerConnection.createOffer();
+    await peerConnection.setLocalDescription(offer);
+	socket.emit('sendingOffer', { 'offer': offer, 'to': socketId });
+	console.log(offer);
+}
+
+socket.on('offerSent', async ({ offer, from }) => {
+	console.log(offer);
+	const configuration = {'iceServers': [{'urls': 'stun:stun.l.google.com:19302'}]}
+	const peerConnection = new RTCPeerConnection(configuration);
+	
+	peerConnection.ontrack = ({track, streams}) => {
+	  track.onunmute = () => {
+		remoteVideo.srcObject = streams[0];
+		console.log(streams);
+	  }
+	}
+	
+	peerConnection.addEventListener('icecandidate', event => {
+		console.log('new candidate');
+		if (event.candidate) {
+			socket.emit('newIceCandidate', { 'new-ice-candidate': event.candidate, 'to': from });
+			console.log(event.candidate);
+		}
+	});
+	
+	socket.on('iceCandidate', async({ iceCandidate }) => {
+		try {
+			await peerConnection.addIceCandidate(iceCandidate);
+		} catch (e) {
+			console.error('Error adding received ice candidate', e);
+		}
+	});
+
+	
+	peerConnection.setRemoteDescription(new RTCSessionDescription(offer));
+	const answer = await peerConnection.createAnswer();
+	await peerConnection.setLocalDescription(answer);
+	// signalingChannel.send({'answer': answer});
+	socket.emit('sendingAnswer', { 'answer': answer, 'to': from });
+	console.log(answer);
+});
